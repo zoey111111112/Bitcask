@@ -14,6 +14,13 @@ using std::istringstream, std::fstream;
 
 namespace fs = std::filesystem;
 
+struct KeyDirEntry {
+    string file_id;
+    uint32_t value_size;
+    uint32_t value_pos;
+    uint32_t timestamp;
+};
+
 struct RecordHeader {
     uint32_t crc;
     uint32_t timestamp;
@@ -27,6 +34,7 @@ void get(const string&);
 void load_data();
 
 string data_file = "data/data_file.data";
+std::unordered_map<string, KeyDirEntry> keyDir;
 
 
 int main(int argc,char* argv[]){
@@ -59,7 +67,7 @@ int main(int argc,char* argv[]){
 }
 
 void put(const string& key,const string& value) {
-    fstream file(data_file, std::ios::app);
+    fstream file(data_file, std::ios::app | std::ios::binary);
     if(file.is_open()){
         RecordHeader header;
         header.crc = 0;  // 计算CRC
@@ -67,18 +75,39 @@ void put(const string& key,const string& value) {
         header.key_size = key.size();
         header.value_size = value.size();
 
+        // 移动到文件末尾
+        file.seekg(0, std::ios::end);
+        
+        // 获取当前位置（即文件大小）
+        uint32_t data_file_size = file.tellg();
+
         file.write(reinterpret_cast<const char*>(&header), sizeof(header));
         file.write(key.data(), key.size());
         file.write(value.data(), value.size());
         file.flush();
         file.close();
+
+        KeyDirEntry entry;
+        entry.file_id = data_file;
+        entry.value_size = header.value_size;
+        entry.value_pos = data_file_size + sizeof(header) + key.size();
+        entry.timestamp = header.timestamp;
+        keyDir[key] = entry;
     } else {
         cerr << "Failed to open data file for writing." << endl;
     }
 
 }
 void del(const string& key) {
-    fstream file(data_file, std::ios::app);
+    if(keyDir.find(key) == keyDir.end()){
+        cerr << "Key not found: " << key << endl;
+        return;
+    }
+    /* 先删除内存中的key */
+    keyDir.erase(key);
+    /* 再删除文件中的key */
+
+    fstream file(data_file, std::ios::app | std::ios::binary);
     if(file.is_open()){
         RecordHeader header;
         header.crc = 0;  // 计算CRC
@@ -96,35 +125,22 @@ void del(const string& key) {
 
 }
 void get(const string& key) {
-    fstream file(data_file, std::ios::in | std::ios::binary);
-    bool deleted;
-    string value;
-    if(file.is_open()){
-        RecordHeader header;
-        string ekey,evalue;
-        while(file.read(reinterpret_cast<char*>(&header), sizeof(header))){
-            ekey.resize(header.key_size);
-            evalue.resize(header.value_size);
-            file.read(&ekey[0], header.key_size);
-            file.read(&evalue[0], header.value_size);
-
-            if(ekey == key){
-                if(header.value_size == 0){
-                    deleted = true;
-                } else {
-                    deleted = false;
-                    value = evalue;
-                }
-            }
-        }
-    } else {
-        cerr << "Failed to open data file for reading." << endl;
-    }
-    if(deleted || value == ""){
-        cout << "key not existed" << endl;
+    if(keyDir.find(key) == keyDir.end()){
+        cerr << "Key not found: " << key << endl;
         return;
     }
+    KeyDirEntry entry = keyDir[key];
+
+    string value;
+    value.resize(entry.value_size);
+
+    fstream file(entry.file_id, std::ios::in | std::ios::binary);
+    file.seekg(entry.value_pos);
+    file.read(&value[0], entry.value_size);
+    file.close();
+
     cout << value << endl;
+    
 }
 
 void load_data() {
@@ -159,8 +175,15 @@ void load_data() {
             file.read(&ekey[0], header.key_size);
             file.read(&evalue[0], header.value_size);
             if(header.value_size != 0){
+                KeyDirEntry entry;
+                entry.file_id = data_file;
+                entry.value_size = header.value_size;
+                entry.value_pos = (uint32_t)file.tellg() - header.value_size;
+                entry.timestamp = header.timestamp;
+                keyDir[ekey] = entry;
                 cout << ekey << " " << evalue << endl;
             } else {
+                keyDir.erase(ekey);
                 cout << ekey << " deleted" << endl;
             }
         }
