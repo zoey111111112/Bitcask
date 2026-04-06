@@ -7,26 +7,21 @@
 #include <cstdint>
 #include <ctime>
 #include <cstdlib>
+#include "common.h"
 
+/*
+下一步计划：
+1. 将单个文件限制在8MB
+2.只有一个active文件
+3.引入文件编号,1.data,2.data
+4.增加CRC校验逻辑
+5.增加后台merge进程生成hint file
+*/
 
 using std::string,std::cin,std::cout,std::cerr,std::endl;
 using std::istringstream, std::fstream;
 
 namespace fs = std::filesystem;
-
-struct KeyDirEntry {
-    string file_id;
-    uint32_t value_size;
-    uint32_t value_pos;
-    uint32_t timestamp;
-};
-
-struct RecordHeader {
-    uint32_t crc;
-    uint32_t timestamp;
-    uint32_t key_size;
-    uint32_t value_size;
-};
 
 void put(const string&,const string&);
 void del(const string&);
