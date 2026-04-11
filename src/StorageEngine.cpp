@@ -14,13 +14,21 @@ using std::cout,std::endl,std::string;
 StorageEngine::StorageEngine(){
     load_data();
 }
-
-void StorageEngine::get(const string &key){
-    if(keyDir.find(key) == keyDir.end()){
-        cout << "Key not found: " << key << endl;
-        return;
+StorageEngine::~StorageEngine() {
+    if (active_file_stream.is_open()) {
+        active_file_stream.flush();
+        active_file_stream.close();
     }
-    KeyDirEntry entry = keyDir[key];
+}
+
+string StorageEngine::get(const string &key){
+    auto it = keyDir.find(key);
+    if(it == keyDir.end()){
+        cout << "Key not found: " << key << endl;
+        return "";
+    }
+    KeyDirEntry& entry = it->second; // 直接用迭代器拿数据，省去第二次查找
+
     string value;
     value.resize(entry.value_size);
 
@@ -30,35 +38,38 @@ void StorageEngine::get(const string &key){
     ifs.close();
 
     cout << value << endl;
+
+    return value;
 }
 
 void StorageEngine::put(const string &key, const string &value){
-    RecordHeader header;
-    header.crc = 0;
-    header.timestamp = static_cast<uint32_t>(time(nullptr));
-    header.key_size = key.size();
-    header.value_size = value.size();
-
-    string active_file = data_dir + "/" + std::to_string(current_file_id) + ".data";
-    if(fs::file_size(active_file) + sizeof(header) + key.size() + value.size() > max_file_size){
-        current_file_id++;
-        active_file = data_dir + "/" + std::to_string(current_file_id) + ".data";
+    uint32_t record_size = sizeof(RecordHeader) + key.size() + value.size();
+    // 1. 检查是否需要切换文件
+    if (!active_file_stream.is_open() || current_offset + record_size > MAX_FILE_SIZE) {
+        rotate_file();
     }
-    std::ofstream ofs(active_file, std::ios::app | std::ios::binary);
-    ofs.write(reinterpret_cast<const char*>(&header), sizeof(header));
-    ofs.write(key.data(), key.size());
-    ofs.write(value.data(), value.size());
-    uint32_t offset = static_cast<uint32_t>(ofs.tellp());
-    ofs.flush();
-    ofs.close();
+    RecordHeader header{0, static_cast<uint32_t>(time(nullptr)), 
+                        static_cast<uint32_t>(key.size()), 
+                        static_cast<uint32_t>(value.size())};
+
+    // 记录 Value 的起始位置：当前偏移量 + Header + Key
+    uint32_t val_pos = current_offset + sizeof(RecordHeader) + key.size();
+    active_file_stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    active_file_stream.write(key.data(), key.size());
+    active_file_stream.write(value.data(), value.size());
+    active_file_stream.flush();
+
 
     // 更新内存中的keyDir
     KeyDirEntry entry;
     entry.file_id = data_dir + "/" + std::to_string(current_file_id) + ".data";
     entry.value_size = header.value_size;
-    entry.value_pos = offset - header.value_size;
+    entry.value_pos = val_pos;
     entry.timestamp = header.timestamp;
     keyDir[key] = entry;
+
+    // 更新全局偏移量
+    current_offset += record_size;
 }
 
 void StorageEngine::del(const string &key){
@@ -66,26 +77,26 @@ void StorageEngine::del(const string &key){
         cout << "Key not found: " << key << endl;
         return;
     }
-    RecordHeader header;
-    header.crc = 0;
-    header.timestamp = static_cast<uint32_t>(time(nullptr));
-    header.key_size = key.size();
-    header.value_size = 0;
 
-    string active_file = data_dir + "/" + std::to_string(current_file_id) + ".data";
-    if(fs::file_size(active_file) + sizeof(header) + key.size() > max_file_size){
-        current_file_id++;
-        active_file = data_dir + "/" + std::to_string(current_file_id) + ".data";
+    uint32_t record_size = sizeof(RecordHeader) + key.size();
+    // 1. 检查是否需要切换文件
+    if (!active_file_stream.is_open() || current_offset + record_size > MAX_FILE_SIZE) {
+        rotate_file();
     }
+    
+    // 写入日志
+    RecordHeader header{0, static_cast<uint32_t>(time(nullptr)), 
+                        static_cast<uint32_t>(key.size()), 0};
 
-    std::ofstream ofs(active_file, std::ios::app | std::ios::binary);
-    ofs.write(reinterpret_cast<const char*>(&header), sizeof(header));
-    ofs.write(key.data(), key.size());
-    ofs.flush();
-    ofs.close();
+    active_file_stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    active_file_stream.write(key.data(), key.size());
+    active_file_stream.flush();
 
     // 删除内存中的key
     keyDir.erase(key);
+
+     // 更新全局偏移量
+    current_offset += record_size;
 }
 
 bool sortFile(const fs::path& file1, const fs::path file2){
@@ -134,11 +145,11 @@ void StorageEngine::load_data(){
     }
 
     std::sort(data_files.begin(), data_files.end(), sortFile);
-    current_file_id = std::stoi(data_files.back().filename().string().substr(0, data_files.back().filename().string().length() - 5));
+    current_file_id = std::stoi(data_files.back().stem().string());
 
 
     for(const auto& file : data_files){
-        std::ifstream ifs(file);
+        std::ifstream ifs(file, std::ios::in | std::ios::binary);
         if(ifs.is_open()){
             RecordHeader header;
             string key,value;
@@ -150,21 +161,35 @@ void StorageEngine::load_data(){
                 // 删除日志
                 if(header.value_size == 0){
                     keyDir.erase(key);
-                    continue;
+                } else {
+                    KeyDirEntry entry;
+                    entry.file_id = file.string(); // 显式转换为字符串
+                    entry.timestamp = header.timestamp;
+                    entry.value_pos = static_cast<uint32_t>(ifs.tellg());
+                    entry.value_size = header.value_size;
+                    keyDir[key] = entry;
                 }
 
-                value.resize(header.value_size);
-                ifs.read(&value[0], header.value_size);
-
-                KeyDirEntry entry;
-                entry.file_id = file.string(); // 显式转换为字符串
-                entry.timestamp = header.timestamp;
-                entry.value_pos = static_cast<uint32_t>(ifs.tellg()) - header.value_size;
-                entry.value_size = header.value_size;
-                keyDir[key] = entry;
+                // 无论是否是删除，都跳过 value 的长度（删除时 value_size 为 0，跳过 0 字节也没问题）
+                ifs.seekg(header.value_size, std::ios::cur);
             }
         }
         ifs.close();
     }
 
+}
+
+void StorageEngine::rotate_file() {
+    if (active_file_stream.is_open()) {
+        active_file_stream.close();
+        current_file_id++;
+    }
+    string path = data_dir + "/" + std::to_string(current_file_id) + ".data";
+    active_file_stream.open(path, std::ios::app | std::ios::binary);
+    current_offset = fs::exists(path) ? fs::file_size(path) : 0;
+
+     // 递归调用一下，或者直接再循环一次切换到 2.data
+    if (current_offset >= MAX_FILE_SIZE) {
+        rotate_file(); 
+    }
 }
