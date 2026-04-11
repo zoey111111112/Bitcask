@@ -4,26 +4,21 @@
 #include <string>
 #include <unordered_map>
 #include <cstdint>
+#include "common.h"
 
-struct KeyDirEntry { /* ... */ };
-struct RecordHeader { /* ... */ };
-
-class BitcaskEngine {
+class StorageEngine {
 public:
-    BitcaskEngine(const std::string& dir);
-    ~BitcaskEngine();
-
+    StorageEngine();
     void put(const std::string& key, const std::string& value);
-    std::string get(const std::string& key);
+    void get(const std::string& key);
     void del(const std::string& key);
 
 private:
-    std::string data_dir;
-    std::string active_file;
+    std::string data_dir = "data";
+    std::uint8_t current_file_id;
     std::unordered_map<std::string, KeyDirEntry> keyDir;
-
+    std::uint32_t max_file_size = 1024 * 8; // 8MB
     void load_data();
-    void rotate_file_if_needed(); // 以后可以加这个：检查文件大小
 };
 
 #endif

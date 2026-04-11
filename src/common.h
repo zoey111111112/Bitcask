@@ -1,3 +1,5 @@
+#ifndef COMMON_H
+#define COMMON_H
 #include <cstdint>
 #include <string>
 
@@ -15,3 +17,5 @@ struct RecordHeader {
     uint32_t key_size;
     uint32_t value_size;
 };
+
+#endif
