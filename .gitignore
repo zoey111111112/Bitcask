@@ -3,6 +3,7 @@ bitcask
 src/bitcask
 *.o
 *.dSYM/
+.vscode/
 
 # 数据文件
 data/
