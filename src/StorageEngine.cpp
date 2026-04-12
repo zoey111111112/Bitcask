@@ -8,8 +8,6 @@
 #include "CRC32.h"
 
 
-
-
 namespace fs = std::filesystem;
 using std::cout,std::endl,std::string;
 
@@ -43,13 +41,11 @@ string StorageEngine::get(const string &key){
     // 1. 顺着读：Header -> Key -> Value
     ifs.seekg(entry.value_pos - key.size() - sizeof(RecordHeader));
     
-    RecordHeader header;
     ifs.read(reinterpret_cast<char*>(&header), sizeof(header));
 
     string disk_key(header.key_size, 0);
     ifs.read(&disk_key[0], header.key_size);
 
-    string value(header.value_size, 0);
     ifs.read(&value[0], header.value_size);
 
     // 2. 校验
