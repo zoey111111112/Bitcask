@@ -9,7 +9,7 @@
 
 
 namespace fs = std::filesystem;
-using std::cout,std::endl,std::string;
+using std::cout,std::endl,std::string,std::vector,std::ifstream,std::ofstream;
 
 StorageEngine::StorageEngine(){
     load_data();
@@ -154,7 +154,13 @@ bool sortFile(const fs::path& file1, const fs::path file2){
     string n1 = file1.stem().string(); // 使用 stem() 直接获取文件名去掉后缀的部分
     string n2 = file2.stem().string();
     return std::stoi(n1) < std::stoi(n2);
-
+}
+bool sortMergedFile(const fs::path& file1, const fs::path file2){
+    string n1 = file1.stem().string(); // 使用 stem() 直接获取文件名去掉后缀的部分
+    string n2 = file2.stem().string();
+    n1 = n1.substr(n1.find("_") + 1);
+    n2 = n2.substr(n2.find("_") + 1);
+    return std::stoi(n1) < std::stoi(n2);
 }
 
 void StorageEngine::load_data(){
@@ -265,4 +271,98 @@ void StorageEngine::rotate_file() {
     if (current_offset >= MAX_FILE_SIZE) {
         rotate_file(); 
     }
+}
+
+void StorageEngine::merge_files(){
+    vector<fs::path> merged_files;
+    vector<fs::path> files;
+    for(const auto& entry : fs::directory_iterator(data_dir)){
+        if(entry.is_regular_file() && entry.path().extension() == ".data"){
+            string stem = entry.path().stem().string();
+            if (stem.find("merged") != string::npos) {
+                merged_files.push_back(entry.path());
+            } else {
+                int id = std::stoi(stem);
+                if (id < current_file_id) { // 关键：不合并当前正在写的文件
+                    files.push_back(entry.path());
+                }
+            }
+        }
+    }
+    sort(files.begin(), files.end(), sortFile);
+    sort(merged_files.begin(), merged_files.end(), sortMergedFile);
+    vector<fs::path> all_files;
+    merge(merged_files.begin(), merged_files.end(), files.begin(), files.end(), back_inserter(all_files));
+
+    for(auto it = all_files.begin(); it != all_files.end(); ++it){
+        ifstream ifs(*it);
+        if(!ifs){
+            // 如果文件打开失败，需要回滚之前合并作出的更改
+            return;
+        }
+        ofstream merge_ofs;
+        ofstream hint_ofs;
+        generate_merge_file(merge_ofs,hint_ofs);
+
+        RecordHeader header;
+        while(ifs.read(reinterpret_cast<char*>(&header),sizeof(header))){
+            string key(header.key_size,0);
+            ifs.read(&key[0],header.key_size);
+            string value(header.value_size,0);
+            ifs.read(&value[0],header.value_size);
+            
+            auto key_it = keyDir.find(key);
+            if(key_it == keyDir.end()){
+                continue;
+            }
+
+            KeyDirEntry& key_entry = key_it->second;
+            // 判断当前读取的位置和内存中的是否一致,不一致则不是最新的数据
+            if(!(key_entry.file_id == *it && key_entry.value_pos == (static_cast<uint32_t>(ifs.tellg()) - header.value_size))){
+                continue;
+            }
+            if(static_cast<uint32_t>(merge_ofs.tellp()) + sizeof(header) + header.key_size + header.value_size > MAX_FILE_SIZE){
+                generate_merge_file(merge_ofs,hint_ofs);
+            }
+
+            merge_ofs.write(reinterpret_cast<const char*>(&header),sizeof(header));
+            merge_ofs.write(key.data(),header.key_size);
+            merge_ofs.write(value.data(),header.value_size);
+
+            HintHeader hint_header{header.timestamp,header.key_size,header.value_size,key_entry.value_pos};
+            hint_ofs.write(reinterpret_cast<const char*>(&hint_header),sizeof(hint_header));
+            hint_ofs.write(key.data(),header.key_size);
+
+            // 更新内存中的keyDir
+            key_entry.value_pos = static_cast<uint32_t>(merge_ofs.tellp()) - header.value_size;
+            key_entry.file_id = data_dir + "/merged_" + std::to_string(next_merge_version-1) + ".data";
+
+            
+        }
+        ifs.close();
+    }
+
+    for(auto it : all_files){
+        fs::remove(it);
+
+        fs::path hint_path = it.replace_extension(".hint");
+        if(fs::exists(hint_path)){
+            fs::remove(hint_path);
+        }
+    }
+
+}
+
+void StorageEngine::generate_merge_file(std::ofstream &merge_ofs,std::ofstream &hint_ofs){
+    if(merge_ofs.is_open()){
+        merge_ofs.close();
+    }
+    if(hint_ofs.is_open()){
+        hint_ofs.close();
+    }
+    string merge_file = data_dir + "/merged_" + std::to_string(next_merge_version) + ".data";
+    string hint_file = data_dir + "/merged_" + std::to_string(next_merge_version) + ".hint";
+    merge_ofs.open(merge_file,std::ios::app | std::ios::binary);
+    hint_ofs.open(hint_file,std::ios::app | std::ios::binary);
+    next_merge_version++;
 }

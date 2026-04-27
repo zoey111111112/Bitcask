@@ -18,4 +18,11 @@ struct RecordHeader {
     uint32_t value_size;
 };
 
+struct HintHeader {
+    uint32_t timestamp;
+    uint32_t key_size;
+    uint32_t value_size;
+    uint32_t value_pos;
+};
+
 #endif
