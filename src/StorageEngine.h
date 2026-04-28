@@ -30,7 +30,7 @@ private:
     void rotate_file(); // 封装文件切换逻辑
     void load_data();
     void merge_files();
-    void generate_merge_file(std::ofstream &merge_ofs,std::ofstream &hint_ofs);
+    void generate_merge_file(MergeHeader&);
 };
 
 #endif

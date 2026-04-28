@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+using std::string;
+
 
 struct KeyDirEntry {
     std::string file_id;
@@ -23,6 +25,22 @@ struct HintHeader {
     uint32_t key_size;
     uint32_t value_size;
     uint32_t value_pos;
+};
+
+struct MergeEntry {
+    string key;
+    string old_file_id;
+    uint32_t old_value_pos;
+    string new_file_id;
+    uint32_t new_value_pos;
+};
+
+struct MergeHeader {
+    string merge_file_path;
+    string hint_file_path;
+    ofstream merge_ofs;
+    ofstream hint_ofs;
+    uint32_t current_merge_offset;
 };
 
 #endif
